@@ -10,17 +10,10 @@ class UdpDump:
         print(f"UDP connection ended: {flow.client_conn.address}")
 
     def udp_message(self, flow: udp.UDPFlow):
-        client_address = flow.client_conn.address
-        server_address = flow.server_conn.address
         data = flow.messages[-1].content
 
-        # print(f"UDP message from {client_address} to {server_address}")
-        # print(data[:1])
-    
-        # messagetype = bin((int.from_bytes(data[:1], byteorder='big')))[2:]
-        # print(data)
-
-
+        messageCount = 0
+        fragmentCount = 0
         ptr = 0
         while (len(data) - ptr) >= 5:
             messagetype = data[ptr] 
@@ -29,50 +22,67 @@ class UdpDump:
             low = data[ptr]
             high = data[ptr]
             isFragmented = ((low & 1) == 1)
-            				# ushort sequenceNumber = (ushort)((low >> 1) | (((int)high) << 7));
 
-            # isFragmented = bin((int.from_bytes(data[:1], byteorder='big')))[2:][-1]
-            sequenceNumber = data[2:4]
-            payloadLen = data[4:6]
+            # TODO is this right?
+            sequenceNumber = (low >> 1) | (high << 7)
+            payloadLen = int.from_bytes(data[ptr:ptr+2], byteorder='little')
 
-            if isFragmented == "1":
-               fragmentGroupId = data[6:8]
-               fragmentTotalCount = data[8:10] 
-               fragmentNumber = data[12:14]
+            ptr += 1
 
-               print("fragmentgroupid", fragmentGroupId)  
-               print("fragmenttotalcount", fragmentTotalCount)
-               print("fragmentnumber", fragmentNumber)
+            if isFragmented == True:
+               fragmentGroupId = data[ptr]
+               ptr += 1
+               fragmentTotalCount = data[ptr]
+               ptr += 1
+               fragmentNumber = data[ptr]
 
-            print("messagetype", messagetype)
-            print("seq",sequenceNumber)
-            print("payload len", payloadLen)
-            print("msgtype",messagetype, data[:1])
-            print("fragment", isFragmented)
+            #    print("fragmentgroupid", fragmentGroupId)
+            #    print("fragmenttotalcount", fragmentTotalCount)
+            #    print("fragmentnumber", fragmentNumber)
+
+            # print("messagetype", messagetype)
+            # print("seq", sequenceNumber)
+            # print("payloadlen", payloadLen)
+            # print("fragment", isFragmented)
             print("===================")
+
+            if messagetype == 0:
+                ptr += 1
+                print(data, data[:ptr])
 
             # check if we got a handler for the lidgren packet type
             if messagetype in handlers:
                 handlers.get(messagetype)(data)
 
-def bytesToBinary(bytes):
-    return int(bin((int.from_bytes(bytes, byteorder='big')))[2:])
-    
 
 def fragmentedData(data):
-    print(str(data))
+    print(data)
     
 def handleDiscovery(data):
    print("discovery made")
 #    print("handlediscovery",data) 
-    
-        
-handlers = {
-    # 0x86
-    "01000011": fragmentedData,
 
-    #0x88
-    "10001001": handleDiscovery 
+
+def handlePong(data):
+    print("pongg")
+
+
+def handlePing(data):
+    print("ping")
+
+
+def handleACK(data):
+    print("ACK")
+
+
+handlers = {
+    # 0: fragmentedData,
+
+    129: handlePing,
+
+    130: handlePong,
+
+    134: handleACK
 }
 
 
