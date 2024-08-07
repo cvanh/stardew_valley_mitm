@@ -16,53 +16,48 @@ class UdpDump:
         messageCount = 0
         fragmentCount = 0
         ptr = 0
-        while (len(data) - ptr) >= 5:
-            messagetype = data[ptr] 
+
+        messagetype = data[ptr]
+        ptr += 1
+        low = data[ptr]
+        high = data[ptr]
+        isFragmented = ((low & 1) == 1)
+        # TODO is this right?
+        sequenceNumber = (low >> 1) | (high << 7)
+        payloadLen = int.from_bytes(data[ptr:ptr+2], byteorder='little')
+        ptr += 1
+        if isFragmented == True:
+           fragmentGroupId = data[ptr]
+           ptr += 1
+           fragmentTotalCount = data[ptr]
+           ptr += 1
+           fragmentNumber = data[ptr]
+        #    print("fragmentgroupid", fragmentGroupId)
+        #    print("fragmenttotalcount", fragmentTotalCount)
+        #    print("fragmentnumber", fragmentNumber)
+        # print("lidgren messagetype", messagetype)
+        # print("seq", sequenceNumber)
+        # print("payloadlen", payloadLen)
+        # print("fragment", isFragmented)
+        # print("===================")
+
+        if isFragmented == False:
             ptr += 1
+            # stardew message type?
+            # print("type", data[ptr])
+            # print(">", IncommingMessageParse(data[ptr]))
+            # print("farmer? >", data[ptr + 3: ptr + 12])
+            # print("sd data", data[ptr:])
 
-            low = data[ptr]
-            high = data[ptr]
-            isFragmented = ((low & 1) == 1)
-
-            # TODO is this right?
-            sequenceNumber = (low >> 1) | (high << 7)
-            payloadLen = int.from_bytes(data[ptr:ptr+2], byteorder='little')
+            # print("======")
 
             ptr += 1
+            # stardew farmer id? seems more like seq
+            # print("farmer", data[ptr:ptr + 14])
 
-            if isFragmented == True:
-               fragmentGroupId = data[ptr]
-               ptr += 1
-               fragmentTotalCount = data[ptr]
-               ptr += 1
-               fragmentNumber = data[ptr]
-
-            #    print("fragmentgroupid", fragmentGroupId)
-            #    print("fragmenttotalcount", fragmentTotalCount)
-            #    print("fragmentnumber", fragmentNumber)
-
-            # print("messagetype", messagetype)
-            # print("seq", sequenceNumber)
-            # print("payloadlen", payloadLen)
-            # print("fragment", isFragmented)
-            # print("===================")
-
-            if messagetype == 0 and isFragmented == False and b"kaas" in data:
-                ptr += 1
-
-                # stardew message type?
-                # print("type", data[ptr])
-                # print(">", IncommingMessageParse(data[ptr]))
-                print(">", data[ptr:])
-
-                ptr += 1
-                # stardew farmer id? seems more like seq
-                # print("farmer", data[ptr])
-            # os.system("clear")
-
-            # check if we got a handler for the lidgren packet type
-            if messagetype in handlers:
-                handlers.get(messagetype)(data)
+        # check if we got a handler for the lidgren packet type
+        if messagetype in handlers:
+            handlers.get(messagetype)(data)
 
 
 def parseBytes(data, ptr):
@@ -131,15 +126,15 @@ def IncommingMessageParse(message_type):
             return "receive server intro"
         elif message_type == 2:
             # return "process incomming message1"
-            return parsemsg(message_type)
+            return parsegamemsg(message_type)
         elif message_type == 3:
             # return "process incomming message 2"
-            return parsemsg(message_type)
+            return parsegamemsg(message_type)
         elif message_type == 9:
             return "get farm hands"
         else:
             # return "process incomming message 3"
-            return parsemsg(message_type)
+            return parsegamemsg(message_type)
 
     elif message_type == 11:
         return "load string"
