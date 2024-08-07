@@ -2,6 +2,7 @@ from mitmproxy import udp
 import struct
 import codecs
 import os
+import sys
 from enum import Enum
 class UdpDump:
     def udp_start(self, flow: udp.UDPFlow):
@@ -40,9 +41,9 @@ class UdpDump:
         print("lidgren payloadlen", payloadLen)
         print("lidgren fragment", isFragmented)
 
-        print("stardew messagetype?", IncommingMessageParse(data[ptr]))
+        print("stardew messagetype?", data[ptr], data[ptr+3])
         print("stardew farmer id", int.from_bytes(
-            data[ptr:ptr + 9], byteorder="little"))
+            data[5:13], byteorder="little"))
         print("===================")
 
         # check if we got a handler for the lidgren packet type
@@ -53,27 +54,32 @@ class UdpDump:
 def fragmentedData(data, ptr):
     # print(data[:ptr])
     pass
+
+
+def handleUnauthPacket(data, ptr):
+    print("unauth packet")
     
 def handleDiscovery(data):
    print("discovery made")
 #    print("handlediscovery",data) 
 
 
-def handlePong(data):
+def handlePong(data, ptr):
     print("pongg")
     # pass
 
 
-def handlePing(data):
+def handlePing(data, ptr):
     print("ping")
     # pass
 
 
-def handleACK(data):
+def handleACK(data, ptr):
     print("ACK")
 
 
 handlers = {
+    0: handleUnauthPacket,
     67: fragmentedData,
 
     # 129: handlePing,
