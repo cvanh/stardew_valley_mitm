@@ -3,11 +3,9 @@ the notes for reverse engineering the packets
 
 
 ## udp packet
-each packet is goes to port `24642` whith udp and tcp?
+each packet on the pc version of the game goes to port `24642` whith udp, in the [Stardew valley docs](https://www.stardewvalley.net/multiplayer-troubleshooting-guide/) it says tcp but I cant find any proof of that.
 
-a packet is [1408 bytes](https://github.com/lidgren/lidgren-network-gen3/blob/master/Lidgren.Network/NetPeerConfiguration.cs#L36C12-L36C16)
-
-PER MESSAGE:
+a lidgren udp packet is [1408 bytes](https://github.com/lidgren/lidgren-network-gen3/blob/master/Lidgren.Network/NetPeerConfiguration.cs#L36C12-L36C16) and per lidgren packet it contains:
 ```
 7 bits - NetMessageType note: the code specifies 8 bits
 1 bit - Is a message fragment?
@@ -26,7 +24,7 @@ PER MESSAGE:
 ```
 
 ### NetIncomingMessagetype
-
+lidgren has the following types for messages
 ```
 Error = 0,
 StatusChanged = 1 << 0,			// Data (string), 1
@@ -46,7 +44,7 @@ ConnectionLatencyUpdated = 1 << 12, // Seconds as a Single
 
 ## NetMessageType
 you can calulate the value of netincomming type of you know the type and if it is a fragmented message.
-7 bits incommingmessagetype + 1 bit isfragmented
+8 bits incommingmessagetype and the right side has 1 bit which indicates if it is fragmented
 ```
 Unconnected = 0,
 UserUnreliable = 1,
@@ -195,7 +193,7 @@ ExpandMTUSuccess = 141,
 ```
 
 ## example packet
-unfragmented packet used to communicate which game lidgren is running for. The len is 0x000d which is 13 chars
+unfragmented packet used to communicate which game lidgren is running for. This is usually send as the first handshake. The len is 0x000d which is 13 chars
 ```
        1  2  3  3  4  4  begin packet
 0000   84 00 00 d0 00 0d 53 74 61 72 64 65 77 56 61 6c   ......StardewVal
@@ -289,33 +287,32 @@ first (fragmented?) message from stardew valley??? maybe receiveServerIntroducti
                                               end?
 ```
 
-ack pkg
+0x43 acknowledges(ACK) incomming packet 0x05 and 0x06
 ```
        1  2  3  3  4  4    
 0000   86 00 00 48 00 43 04 00 43 05 00 43 06 00         ...H.C..C..C..
 
 ```
 
-idk package
-```
-chat a:
+incomming chat message "onhandig". In this case 0x08(B) indicates a len of 8 chars. 0xef(A) indicates a chat message
 
+chat from player a:
+```
 0000   00 00 03 04 00 06 00 00 00 00 00 00 00 00 08 00   ................
                       1  2  2  3  3  4  4  
 0010   45 00 00 41 f1 43 40 00 40 11 4b 66 7f 00 00 01   E..A.C@.@.Kf....
 0020   7f 00 00 01 1f 90 94 67 00 2d fe 40 43 ce 04 00   .......g.-.@C...
+             A
 0030   01 0a ef 54 e8 a0 f1 fb 93 db 13 00 00 00 00 00   ...T............
-                                  o  n  h  a  n  d  i
+                               B  begin strin
 0040   00 00 00 00 00 00 00 00 08 6f 6e 68 61 6e 64 69   .........onhandi
        g
 0050   67                                                g
+```
 
-
-chat b:
-
+chat from player b:
+```
 0000   00 00 03 04 00 06 00 00 00 00 00 00 00 00 08 00   ................
-
-                      
 0010   45 00 00 3d 37 53 40 00 40 11 05 5b 7f 00 00 01   E..=7S@.@..[....
                                            1  2  2  3
 0020   7f 00 00 01 1f 90 94 67 00 29 fe 3c 43 64 05 e0   .......g.).<Cd..
@@ -323,32 +320,29 @@ chat b:
 0030   00 0a ef 54 e8 a0 f1 fb 93 db 0f 00 00 00 00 00   ...T............
                                   k  a  a  s
 0040   00 00 00 00 00 00 00 00 04 6b 61 61 73            .........kaas
-
-chat b:
-
+```
+chat from player b:
+```
 0000   00 00 03 04 00 06 00 00 00 00 00 00 00 00 08 00   ................
 0010   45 00 00 3f 53 81 40 00 40 11 e9 2a 7f 00 00 01   E..?S.@.@..*....
 0020   7f 00 00 01 1f 90 94 67 00 2b fe 3e 43 86 05 f0   .......g.+.>C...
 0030   00 0a ef 54 e8 a0 f1 fb 93 db 11 00 00 00 00 00   ...T............
                                   k  a  n  k  e  r      
 0040   00 00 00 00 00 00 00 00 06 6b 61 6e 6b 65 72      .........kanker
-
-
 ```
 
+more hex escaped chats seprated by blank line for diffrent user
 ```
 CP\x03X\x01\n6\xaf\xc8+i\x8a5\xa5\x1e\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x13kaas is erg lekker
 CZ\x03X\x01\n6\xaf\xc8+i\x8a5\xa5\x1e\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x13kaas is erg lekker
 
-andere speler:
 C\xe0\x07X\x01\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x1e\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x13kaas is erg lekker 
 C\x06\x01P\x01\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x1d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12kaas is erg lekker
 CV\x01P\x01\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x1d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12kaas is erg lekker
 Ch\x01P\x01\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x1d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12kaas is erg lekker
 C\x80\x02P\x01\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x1d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x12kaas is erg lekker
 
-nieuwe game:
-
+diffrent game:
 C\xf2\x00\xe0\x00\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04gaas
 C\xf4\x00\xe0\x00\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04gaas
 C\xf6\x00\xe0\x00\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04gaas
@@ -358,19 +352,16 @@ CB\x00\xe0\x00\n6\xaf\xc8+i\x8a5\xa5\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
 CD\x00\xe0\x00\n6\xaf\xc8+i\x8a5\xa5\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04kaas
 CF\x00\xe0\x00\n6\xaf\xc8+i\x8a5\xa5\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04kaas
 
-uparsed
-
+parsed without lidgren headers:
 \xe0\x00\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04kaas
 \xe0\x00\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04kaas
 \xe0\x00\n\xefT\xe8\xa0\xf1\xfb\x93\xdb\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04kaas
 
 \xe0\x00\n6\xaf\xc8+i\x8a5\xa5\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04gaas
 \xe0\x00\n6\xaf\xc8+i\x8a5\xa5\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04gaas << 0x04 is the len of the chat message, 0x0f is the end of an id
-
-
-
 ```
 
+## lidgren packet layout extra
 1: Netmessagetype(7), isfragment
 2: netmessagelibrarytype(8)
 3: sequence number(16)
