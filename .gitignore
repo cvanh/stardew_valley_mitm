@@ -1,0 +1,5 @@
+# these could contain sensetive traffic that cannot be leaked
+*.pcapng
+
+./mitmproxy
+./mitmweb
