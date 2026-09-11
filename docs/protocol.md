@@ -352,6 +352,73 @@ verified on 1.6.15 up to 145:
 12 timeOfDay (int, e.g. 1900), 13 daysPlayed (int)**, 14 visitsUntilY1Guarantee (int),
 15 isPaused (bool), 16 isTimePaused (bool), 17 locationWeather (dictionary) ... 56 fields in total.
 
+### 3.6 GameLocation net fields and the object/terrain layers
+
+A `GameLocation` is sent whole in a `locationIntroduction` (message 3) and then
+patched by `locationDelta` (message 6) messages. Both wrap the same
+`NetRoot<GameLocation>`; on a farm the introduction is ~192 KB.
+
+`GameLocation.initNetFields` declares **51 fields** on the 1.6.15 server (the
+1.5 decompile has 38). The leading order is unchanged from 1.5 and is verified
+against captured farm data:
+
+| Index | Field | Type |
+|---|---|---|
+| 0..2 | mapPath, uniqueName, name | NetString |
+| 3 | lightLevel | NetFloat |
+| 4 | sharedLights | NetIntDictionary |
+| 5..11 | isFarm, isOutdoors, isStructure, ignoreDebrisWeather, ignoreOutdoorLighting, ignoreLights, treatAsOutdoors | NetBool |
+| 12 | warps | NetObjectList\<Warp\> |
+| 13..14 | doors, interiorDoors | NetPointDictionary |
+| 15 | waterColor | NetColor |
+| **16** | **netObjects** | **NetVector2Dictionary\<Object\>** |
+| 17 | projectiles | NetCollection |
+| 18 | largeTerrainFeatures | NetCollection |
+| **19** | **terrainFeatures** | **NetVector2Dictionary\<TerrainFeature\>** |
+| 20 | characters | NetCollection\<NPC\> |
+| 21 | debris | NetCollection |
+| 22 | netAudio.NetFields | NetFields |
+| ... | ... 33 resourceClumps, 34 furniture, ... modData | ... |
+
+Field indices past 19 are shifted from the 1.5 order by the extra 1.6 fields and
+are not all mapped. The two tile-keyed layers we decode - **16 netObjects** and
+**19 terrainFeatures** - both sit *before* the `characters` collection, so they
+can be read without decoding NPCs.
+
+**Message 3 body:** `bool force_current`, `byte peerId`, `NetVersion`, then the
+`NetRoot` value: a `NetVersion`, `string typeName` ("StardewValley.Farm"), and
+the **full** field serialisation (each field written in order, *no* leading
+dirty bitarray). 1.6.15 servers sometimes insert one extra `0x00` before the
+value's version vector.
+
+**Message 6 body:** `bool isStructure`, `string name`, `NetVersion`, `byte
+deltaType` (0 = child delta), then a *skippable* body holding `bitarray[51]`
+(dirty fields) followed by each dirty field's delta, in ascending index order.
+
+**NetVector2Dictionary layout.** Every entry - both in the full write and inside
+a delta's add list - is:
+
+```
+key: Vector2 (float32 x, float32 y)   version: NetVersion   refFlag: byte   typeName: string   <value net fields>
+```
+
+The concrete type name is repeated for every entry (576 `...Tree` strings for
+576 trees), and values are **not length-prefixed**. Rather than re-implement the
+full `Object`/`TerrainFeature` net graph, `sdvclient/location.py` finds each
+entry by its embedded type name and walks *backwards* over `refFlag` and the
+(variable-length) `NetVersion` to recover the tile key. Object subtype
+(Stone/Twig/Chest/...) comes from the object's `name` NetString just after the
+type name; a tree's species id is the first string after `...Tree`. On the test
+farm this yields exactly 576 trees, 852 grass, 343 stone and 221 twig.
+
+**locationDelta dictionaries.** A `NetDictionary` delta is `varint changeCount`
+× `(byte removal, key, NetVersion, value?)` then `varint updateCount` × `(key,
+NetVersion, skippable body)`. Removals and updates are fully decoded (a removal
+drops the tile; an update leaves it in place); an addition carries a value we
+cannot length-measure, so decoding stops after recording its tile. Resource
+clumps (field 33) and furniture (34) are not decoded yet - they follow the
+`characters` collection.
+
 ## 4. What the client sends
 
 | Action | Message |
@@ -368,9 +435,12 @@ sets) and the tile under a farmer is `((x + 32) / 64, (y + 16) / 64)`.
 
 ## 5. Known gaps
 
-* Location state (message 3/6), team state (13) and the binary part of farmer
-  state are not decoded; the client keeps only positions/names/locations of
-  other farmers and the world clock.
+* Location state (message 3/6) is decoded only for the object (16) and terrain
+  (19) layers - the things scattered around the map - via `sdvclient/location.py`
+  (see section 3.6). Resource clumps, furniture, buildings, the character
+  collection, team state (13) and the binary part of farmer state are still not
+  decoded; the client also keeps positions/names/locations of other farmers and
+  the world clock.
 * The new-day / ready-check handshake (14, 30, 31) is not answered, so a bot
   that is still connected when the host goes to bed will hold up the night
   until it is kicked or disconnects.

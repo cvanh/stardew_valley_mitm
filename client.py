@@ -5,12 +5,12 @@ Examples::
 
     python3 client.py 10.1.110.27:24642 --list
     python3 client.py 10.1.110.27:24642 --say "hello from python" --walk 3,0 --listen 30
-    python3 client.py 10.1.110.27:24642 --farmhand dsf --interactive
+    python3 client.py 10.1.110.27:24642 --farmhand dsf` --interactive
 
 Interactive mode reads lines from stdin: plain text is sent as chat, and the
 commands ``/walk X Y`` (tiles, relative), ``/goto X Y`` (tiles, absolute),
 ``/warp LOCATION X Y``, ``/face 0-3``, ``/follow [NAME]``, ``/unfollow``,
-``/players``, ``/world`` and ``/quit`` are understood.
+``/players``, ``/world``, ``/things [RADIUS]`` and ``/quit`` are understood.
 """
 
 from __future__ import annotations
@@ -156,7 +156,7 @@ async def interactive(client: StardewClient) -> None:
                 break
             elif cmd == "help":
                 print("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | "
-                      "/follow [NAME] | /unfollow | /players | /world | /quit")
+                      "/follow [NAME] | /unfollow | /players | /world | /things [R] | /quit")
             elif cmd == "follow":
                 await stop_follow()
                 follow_task = asyncio.ensure_future(follow(client, args[0] if args else None))
@@ -182,6 +182,14 @@ async def interactive(client: StardewClient) -> None:
                     print(f"  {'*' if p.is_me else ' '} {p}{' [host]' if p.is_host else ''}")
             elif cmd == "world":
                 print(f"  {client.world}  ping={client.ping and round(client.ping * 1000)}ms")
+            elif cmd == "things":
+                if client.location is None or client.me is None or client.me.tile is None:
+                    print("  no map decoded yet")
+                else:
+                    radius = int(args[0]) if args else 5
+                    print(f"  {client.location}")
+                    for thing in client.location.things_near(client.me.tile, radius):
+                        print(f"    {thing}")
             else:
                 print("unknown command; /help")
         except StardewError as exc:

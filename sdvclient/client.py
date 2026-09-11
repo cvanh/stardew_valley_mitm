@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from . import netcode
+from .location import Location, apply_location_delta, parse_location_snapshot
 from .lidgren import LidgrenConnection, Status
 from .netcode import FARMER_FIELD_COUNT, NetVersion, build_farmer_delta, parse_farmer_delta, parse_world_delta
 from .protocol import (
@@ -128,6 +129,8 @@ class StardewClient:
     * ``on_player_joined(player)``, ``on_player_left(player)``, ``on_player_updated(player)``
     * ``on_world_updated(world: WorldState)``
     * ``on_location(intro: LocationIntroduction)`` - a location the server sent us
+    * ``on_location_changed(location: Location)`` - the decoded map of things around us
+      (objects and terrain features by tile) after a snapshot or delta; see ``self.location``
     * ``on_connection_message(text_key: str)`` - e.g. ``Strings\\UI:Client_WaitForHostLoad``
     * ``on_message(message: GameMessage)`` - every raw game message, before it is interpreted
     * ``on_disconnected(reason: str)``
@@ -156,6 +159,7 @@ class StardewClient:
         self.host_player: Optional[Player] = None
         self.players: Dict[int, Player] = {}
         self.world = WorldState()
+        self.location: Optional[Location] = None
         self.joined = False
         self.disconnect_reason: Optional[str] = None
 
@@ -166,6 +170,7 @@ class StardewClient:
         self.on_player_updated: Optional[Callable[[Player], None]] = None
         self.on_world_updated: Optional[Callable[[WorldState], None]] = None
         self.on_location: Optional[Callable[[LocationIntroduction], None]] = None
+        self.on_location_changed: Optional[Callable[[Location], None]] = None
         self.on_connection_message: Optional[Callable[[str], None]] = None
         self.on_message: Optional[Callable[[GameMessage], None]] = None
         self.on_disconnected: Optional[Callable[[str], None]] = None
@@ -490,11 +495,21 @@ class StardewClient:
         elif t == MessageType.LOCATION_INTRODUCTION:
             intro = parse_location_introduction(msg.data)
             log.debug("location introduction: %s (force_current=%s)", intro.display_name, intro.force_current)
-            if self.me is not None and (intro.force_current or self._location_future is not None):
+            entering = intro.force_current or self._location_future is not None
+            if self.me is not None and entering:
                 self.me.location = intro.display_name
+            if entering:
+                # decode the map we are entering: objects and terrain by tile
+                self.location = parse_location_snapshot(msg.data)
+                log.debug("decoded location: %s", self.location)
+                self._emit(self.on_location_changed, self.location)
             if self._location_future is not None and not self._location_future.done():
                 self._location_future.set_result(intro)
             self._emit(self.on_location, intro)
+
+        elif t == MessageType.LOCATION_DELTA:
+            if self.location is not None and apply_location_delta(self.location, msg.data):
+                self._emit(self.on_location_changed, self.location)
 
         elif t == MessageType.CHAT_MESSAGE:
             recipient, language, text = parse_chat_message(msg.data)

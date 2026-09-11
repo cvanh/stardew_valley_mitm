@@ -29,6 +29,13 @@ from .client import (
     StardewError,
     WorldState,
 )
+from .location import (
+    Location,
+    MapObject,
+    TerrainFeature,
+    apply_location_delta,
+    parse_location_snapshot,
+)
 from .protocol import (
     ALL_PLAYERS,
     DEFAULT_PORT,
@@ -47,10 +54,15 @@ __all__ = [
     "FarmerInfo",
     "GameMessage",
     "JoinRejected",
+    "Location",
+    "MapObject",
     "MessageType",
     "Player",
     "SEASONS",
     "StardewClient",
     "StardewError",
+    "TerrainFeature",
     "WorldState",
+    "apply_location_delta",
+    "parse_location_snapshot",
 ]
