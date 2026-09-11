@@ -419,6 +419,34 @@ cannot length-measure, so decoding stops after recording its tile. Resource
 clumps (field 33) and furniture (34) are not decoded yet - they follow the
 `characters` collection.
 
+### 3.7 Farmer inventory (netItems, field 39)
+
+`Farmer.netItems` is field 39, a `NetRef<Inventory>`; `Inventory` is a
+`NetList<Item>` (12 backpack slots for a starter farmhand). Its delta rides a
+message-0 farmer delta and nests as::
+
+    NetRef child: skippable {
+        bitarray(1) = [True]              # Inventory field 0 (the list) dirty
+        int32 count                       # element count (12)
+        NetRef child: skippable {         # the backing NetArray
+            bitarray(15)                  # which slots changed
+            per dirty slot:
+                byte refDeltaType         # 0 modify existing item, 1 set new value
+                skippable { payload }
+        }
+    }
+
+A **set** (type 1) payload is `NetVersion`, the concrete type name
+(`StardewValley.Object`), then the item's full serialisation. A plain Object is
+`Item` header — `int32 specialVariable, int32 category, NetString name, int32
+parentSheetIndex, bool hasBeenInInventory, NetString itemId`, `modData` — then
+the Object fields (tileLocation, owner, `type`, flags, fragility, price,
+edibility, **stack (int32)**, **quality (int32)**, …). Freshly added items carry
+stack 0; the game grows the stack with **modify** (type 0) deltas whose item
+field-delta sets field 11. The client builds new items from this skeleton to add
+pickups to its own inventory (see `sdvclient/inventory.py`); every captured
+field-39 delta round-trips byte-for-byte.
+
 ## 4. What the client sends
 
 | Action | Message |

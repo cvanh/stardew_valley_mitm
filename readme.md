@@ -22,6 +22,8 @@ python3 client.py 10.1.110.27:24642 --say "hello from python" --walk 3,0 --liste
 
 # interactive: type to chat, /walk DX DY, /goto X Y, /warp Town 30 60, /players, /world, /quit
 python3 client.py 10.1.110.27:24642 --farmhand NAME --interactive
+# other players can send the same commands in game chat as .walk, .goto, ... (the game eats /);
+# /quit is local only; replies are whispered back
 ```
 
 As a library:

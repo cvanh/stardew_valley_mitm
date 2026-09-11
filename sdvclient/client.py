@@ -16,6 +16,13 @@ from .location import (
     read_location_delta_version,
     read_location_intro_version,
 )
+from .inventory import (
+    DROPS,
+    INVENTORY_SIZE,
+    InvItem,
+    build_set_slot_body,
+    parse_inventory_xml,
+)
 from .lidgren import LidgrenConnection, Status
 from .netcode import FARMER_FIELD_COUNT, NetVersion, build_farmer_delta, parse_farmer_delta, parse_world_delta
 from .protocol import (
@@ -167,6 +174,8 @@ class StardewClient:
         self.players: Dict[int, Player] = {}
         self.world = WorldState()
         self.location: Optional[Location] = None
+        self.inventory: List = []
+        self._item_slots: Dict[str, Tuple[int, int]] = {}
         self._locations: Dict[str, Location] = {}
         self._location_versions: Dict[str, NetVersion] = {}
         self._location_version: Optional[NetVersion] = None
@@ -293,6 +302,9 @@ class StardewClient:
             self._join_future = None
         self.joined = True
         self.players[self.me.unique_id] = self.me
+        # read our starting inventory so add_item can pick empty slots and stack
+        self.inventory = parse_inventory_xml(info.xml)
+        self._item_slots = {}  # item_id -> (slot, running stack) for items we added
         return self.me
 
     # ------------------------------------------------------------------ actions
@@ -429,21 +441,74 @@ class StardewClient:
         # reflect it locally too
         (self.location.objects if objects else self.location.terrain).pop((int(tile[0]), int(tile[1])), None)
 
-    async def clear_area(self, center: Tuple[int, int], radius: int = 3, *, delay: float = 0.15) -> int:
+    def add_item(self, item_id: str, name: str, count: int = 1, quality: int = 0) -> None:
+        """Add ``count`` of an item to our inventory (net field 39).
+
+        Puts the item in the slot it already occupies (bumping the stack) or the
+        first empty backpack slot, and syncs a farmer delta the host accepts.
+        """
+        self._require_joined()
+        assert self.me is not None
+        item_id = str(item_id)
+        if item_id in self._item_slots:
+            slot, stack = self._item_slots[item_id]
+            stack += count
+        else:
+            slot = self._first_empty_slot()
+            if slot is None:
+                raise StardewError("inventory full")
+            stack = count
+        self._item_slots[item_id] = (slot, stack)
+        item = InvItem(item_id, name, stack, quality)
+        if slot < len(self.inventory):
+            self.inventory[slot] = item
+        self._version.bump(0)
+        body = build_set_slot_body(slot, item, version=NetVersion(list(self._version.vector)))
+        data = build_farmer_delta(self.me.unique_id, self._version, self.farmer_field_count,
+                                  item_field=body)
+        self._send(MessageType.FARMER_DELTA, data)
+
+    def _first_empty_slot(self) -> Optional[int]:
+        used = {s for s, _ in self._item_slots.values()}
+        for i in range(INVENTORY_SIZE):
+            occupied = i < len(self.inventory) and self.inventory[i] is not None
+            if not occupied and i not in used:
+                return i
+        return None
+
+    def _drop_for(self, thing: object) -> Optional[Tuple[str, str]]:
+        """The (item_id, name) a cleared object/terrain yields, or None."""
+        key = getattr(thing, "name", None) or getattr(thing, "kind", None)
+        return DROPS.get(key) if key else None
+
+    async def clear_area(self, center: Tuple[int, int], radius: int = 3, *,
+                         delay: float = 0.15, collect: bool = True) -> int:
         """Remove every object and terrain feature within ``radius`` tiles of ``center``.
 
-        Sends one removal per thing (objects then terrain), pacing them by
-        ``delay`` seconds so the host is not flooded.  Returns the count sent.
+        Sends one removal per thing, pacing them by ``delay`` seconds so the host
+        is not flooded.  With ``collect`` (default), each cleared thing's drop is
+        added to our inventory.  Returns the count removed.
         """
         self._require_joined()
         if self.location is None:
             raise StardewError("no location decoded yet")
-        targets = [t.tile for t in self.location.things_near(center, radius)]
+        things = self.location.things_near(center, radius)
+        drops: Dict[Tuple[str, str], int] = {}
         sent = 0
-        for tile in targets:
+        for thing in things:
+            tile = thing.tile
             in_objects = tile in self.location.objects
             self._remove_tile(tile, objects=in_objects)
+            if collect and (drop := self._drop_for(thing)) is not None:
+                drops[drop] = drops.get(drop, 0) + 1
             sent += 1
+            if delay:
+                await asyncio.sleep(delay)
+        for (item_id, name), count in drops.items():
+            try:
+                self.add_item(item_id, name, count)
+            except StardewError:
+                break  # inventory full
             if delay:
                 await asyncio.sleep(delay)
         return sent

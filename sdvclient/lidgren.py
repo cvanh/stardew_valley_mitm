@@ -405,6 +405,7 @@ class LidgrenConnection(asyncio.DatagramProtocol):
             return
         n = len(data)
         pos = 0
+        messages = []
         while n - pos >= HEADER_SIZE:
             msg_type, sequence, is_fragment, length = decode_header(data, pos)
             pos += HEADER_SIZE
@@ -413,6 +414,14 @@ class LidgrenConnection(asyncio.DatagramProtocol):
                 break
             payload = data[pos : pos + length]
             pos += length
+            messages.append((msg_type, sequence, is_fragment, payload))
+            if USER_RELIABLE_UNORDERED <= msg_type < LibraryType.LIBRARY_ERROR:
+                self._pending_acks.append((msg_type, sequence))
+        # Ack before handling: the host resends after ~25 ms + 2.1 x RTT, so the
+        # ack must not wait on the game-level callbacks (delta parsing etc.).
+        if self.status != Status.DISCONNECTED:
+            self._flush_acks()
+        for msg_type, sequence, is_fragment, payload in messages:
             try:
                 if msg_type >= LibraryType.LIBRARY_ERROR:
                     self._handle_library(msg_type, payload)
@@ -516,8 +525,7 @@ class LidgrenConnection(asyncio.DatagramProtocol):
     # ------------------------------------------------------------------ user messages
 
     def _handle_user(self, msg_type: int, sequence: int, is_fragment: bool, payload: bytes) -> None:
-        if msg_type >= USER_RELIABLE_UNORDERED:
-            self._pending_acks.append((msg_type, sequence))
+        # acks for reliable messages are queued in datagram_received, before handling
         if msg_type >= USER_RELIABLE_ORDERED:
             receiver = self._receivers.get(msg_type)
             if receiver is None:

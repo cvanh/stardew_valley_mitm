@@ -514,14 +514,22 @@ def build_farmer_delta(
     speed: Optional[int] = None,
     name: Optional[str] = None,
     location: Optional[Tuple[str, bool]] = None,
+    item_field: Optional[bytes] = None,
 ) -> bytes:
     """Build a ``farmerDelta`` (message type 0) payload for our own farmer.
 
     Only fields the server accepts from a client and whose encoding is stable
     across 1.6.x are supported.  ``field_count`` must match the server's
     ``Farmer`` net-field count or the server rejects the whole delta.
+    ``item_field`` is a pre-built netItems (field 39) ``NetRef`` child payload
+    from :mod:`sdvclient.inventory`.
     """
     fields: Dict[int, bytes] = {}
+    if item_field is not None:
+        fw = Writer()
+        fw.u8(0)  # netItems NetRef child delta
+        fw.skippable(item_field)
+        fields[F_ITEMS] = fw.getvalue()
     if position is not None or moving is not None:
         fw = Writer()
         fw.bitarray([position is not None, False, moving is not None])

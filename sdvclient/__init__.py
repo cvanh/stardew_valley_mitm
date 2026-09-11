@@ -36,6 +36,14 @@ from .location import (
     apply_location_delta,
     parse_location_snapshot,
 )
+from .inventory import (
+    DROPS,
+    InvItem,
+    InventoryDelta,
+    build_set_slot_body,
+    decode_inventory_delta,
+    parse_inventory_xml,
+)
 from .protocol import (
     ALL_PLAYERS,
     DEFAULT_PORT,
@@ -54,10 +62,16 @@ __all__ = [
     "FarmerInfo",
     "GameMessage",
     "JoinRejected",
+    "DROPS",
+    "InvItem",
+    "InventoryDelta",
     "Location",
     "MapObject",
     "MessageType",
     "Player",
+    "build_set_slot_body",
+    "decode_inventory_delta",
+    "parse_inventory_xml",
     "SEASONS",
     "StardewClient",
     "StardewError",

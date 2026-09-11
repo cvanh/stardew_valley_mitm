@@ -12,6 +12,10 @@ commands ``/walk X Y`` (tiles, relative), ``/goto X Y`` (tiles, absolute),
 ``/warp LOCATION X Y``, ``/face 0-3``, ``/follow [NAME]``, ``/unfollow``,
 ``/players``, ``/world``, ``/things [RADIUS]``, ``/clear [RADIUS]`` and ``/quit``
 are understood.  ``/clear`` removes every object and terrain feature around us.
+Commands may also be prefixed with ``.`` instead of ``/``.  Other players can
+send the same commands in game chat (except ``/quit``); use the ``.`` prefix
+there, since the game's chat box intercepts anything starting with ``/``.  The
+result is whispered back to them.
 """
 
 from __future__ import annotations
@@ -54,7 +58,7 @@ def attach_printers(client: StardewClient) -> None:
     def on_world(world):
         if world.clock != last_clock["value"]:
             last_clock["value"] = world.clock
-            print(f"[world] {world}")
+            # print(f"[world] {world}")
 
     client.on_world_updated = on_world
 
@@ -126,84 +130,163 @@ async def follow(client: StardewClient, name: str | None = None, *,
         raise
 
 
-async def interactive(client: StardewClient) -> None:
-    loop = asyncio.get_running_loop()
-    print("interactive mode - type text to chat, /help for commands")
-    follow_task: asyncio.Task | None = None
+COMMAND_PREFIXES = ("/", ".")
 
-    async def stop_follow() -> None:
-        nonlocal follow_task
-        if follow_task is not None and not follow_task.done():
-            follow_task.cancel()
+HELP = ("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | "
+        "/follow [NAME] | /unfollow | /players | /world | /things [R] | "
+        "/clear [R] | /quit  (prefix with . instead of / in game chat)")
+
+
+class Session:
+    """Shared command dispatcher for interactive mode.
+
+    Commands arrive from two sources: lines typed on stdin and chat messages
+    from other players that start with ``/``.  Both go through :meth:`run`;
+    only ``reply`` differs (print locally vs. whisper back to the sender).
+    """
+
+    def __init__(self, client: StardewClient) -> None:
+        self.client = client
+        self.follow_task: asyncio.Task | None = None
+
+    async def stop_follow(self) -> None:
+        if self.follow_task is not None and not self.follow_task.done():
+            self.follow_task.cancel()
             try:
-                await follow_task
+                await self.follow_task
             except asyncio.CancelledError:
                 pass
-        follow_task = None
+        self.follow_task = None
 
-    while client.joined:
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
+    async def run(self, line: str, reply, *, remote: bool = False) -> bool:
+        """Execute one ``/command`` line; returns False when the session should end."""
+        client = self.client
+        cmd, *args = line[1:].split()
         try:
-            if not line.startswith("/"):
-                client.chat(line)
-                continue
-            cmd, *args = line[1:].split()
             if cmd in ("quit", "exit"):
-                break
+                if remote:
+                    reply("quit is only available locally")
+                    return True
+                return False
             elif cmd == "help":
-                print("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | "
-                      "/follow [NAME] | /unfollow | /players | /world | /things [R] | "
-                      "/clear [R] | /quit")
+                reply(HELP)
             elif cmd == "follow":
-                await stop_follow()
-                follow_task = asyncio.ensure_future(follow(client, args[0] if args else None))
+                await self.stop_follow()
+                self.follow_task = asyncio.ensure_future(follow(client, args[0] if args else None))
+                reply(f"following {args[0] if args else 'the nearest player'}")
             elif cmd == "unfollow":
-                await stop_follow()
+                await self.stop_follow()
+                reply("stopped following")
             elif cmd == "walk" and len(args) == 2:
-                await stop_follow()
+                await self.stop_follow()
                 await client.walk(int(args[0]), int(args[1]))
-                print(f"now at tile {client.me.tile}")
+                reply(f"now at tile {client.me.tile}")
             elif cmd == "goto" and len(args) == 2:
-                await stop_follow()
+                await self.stop_follow()
                 await client.walk_to(int(args[0]), int(args[1]))
-                print(f"now at tile {client.me.tile}")
+                reply(f"now at tile {client.me.tile}")
             elif cmd == "warp" and len(args) == 3:
-                await stop_follow()
+                await self.stop_follow()
                 intro = await client.warp(args[0], int(args[1]), int(args[2]))
-                print(f"warped to {intro.display_name if intro else args[0]} (no confirmation)" if not intro
-                      else f"warped to {intro.display_name}")
+                reply(f"warped to {intro.display_name}" if intro
+                      else f"warped to {args[0]} (no confirmation)")
             elif cmd == "face" and len(args) == 1:
                 client.face(int(args[0]))
+                reply(f"facing {args[0]}")
             elif cmd == "players":
                 for p in client.players.values():
-                    print(f"  {'*' if p.is_me else ' '} {p}{' [host]' if p.is_host else ''}")
+                    reply(f"  {'*' if p.is_me else ' '} {p}{' [host]' if p.is_host else ''}")
             elif cmd == "world":
-                print(f"  {client.world}  ping={client.ping and round(client.ping * 1000)}ms")
+                reply(f"  {client.world}  ping={client.ping and round(client.ping * 1000)}ms")
             elif cmd == "things":
                 if client.location is None or client.me is None or client.me.tile is None:
-                    print("  no map decoded yet")
+                    reply("  no map decoded yet")
                 else:
                     radius = int(args[0]) if args else 5
-                    print(f"  {client.location}")
+                    reply(f"  {client.location}")
                     for thing in client.location.things_near(client.me.tile, radius):
-                        print(f"    {thing}")
+                        reply(f"    {thing}")
             elif cmd == "clear":
                 if client.location is None or client.me is None or client.me.tile is None:
-                    print("  no map decoded yet")
+                    reply("  no map decoded yet")
                 else:
                     radius = int(args[0]) if args else 3
                     sent = await client.clear_area(client.me.tile, radius)
-                    print(f"  cleared {sent} thing(s) within {radius} tiles of {client.me.tile}")
+                    reply(f"  cleared {sent} thing(s) within {radius} tiles of {client.me.tile}")
             else:
-                print("unknown command; /help")
-        except StardewError as exc:
-            print(f"error: {exc}")
-    await stop_follow()
+                reply("unknown command; /help")
+        except (StardewError, ValueError) as exc:
+            reply(f"error: {exc}")
+        return True
+
+
+async def interactive(client: StardewClient) -> None:
+    loop = asyncio.get_running_loop()
+    print("interactive mode - type text to chat, /help for commands "
+          "(other players can also send .commands in chat)")
+    session = Session(client)
+    # remote commands land here from the on_chat callback; stdin is polled lazily
+    # (one readline in flight at a time) so quitting never leaves a reader thread
+    # blocked on the terminal.
+    queue: asyncio.Queue = asyncio.Queue()
+    stdin_future: asyncio.Future | None = None
+
+    def on_chat(message, sender) -> None:
+        printer(message, sender)
+        me = client.me
+        if me is not None and message.sender_id == me.unique_id:
+            return  # our own chat echoed back
+        text = message.text.strip()
+        if not text.startswith(COMMAND_PREFIXES):
+            return
+        name = sender.name if sender is not None and sender.name else str(message.sender_id)
+
+        def reply(line: str) -> None:
+            print(f"[cmd from {name}] {line}")
+            try:
+                client.chat(line.strip(), to=message.sender_id)
+            except StardewError as exc:
+                print(f"error replying to {name}: {exc}")
+
+        print(f"[cmd from {name}] {text}")
+        queue.put_nowait((text, reply, True))
+
+    printer = client.on_chat
+    client.on_chat = on_chat
+    try:
+        while client.joined:
+            if stdin_future is None:
+                stdin_future = loop.run_in_executor(None, sys.stdin.readline)
+            queue_get = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({stdin_future, queue_get}, return_when=asyncio.FIRST_COMPLETED)
+            if stdin_future in done:
+                raw = stdin_future.result()
+                stdin_future = None
+                if not raw:
+                    queue_get.cancel()
+                    break  # EOF on stdin
+                item = (raw.strip(), print, False)
+                if queue_get in done:
+                    queue.put_nowait(queue_get.result())  # keep the remote command for next round
+                else:
+                    queue_get.cancel()
+            else:
+                item = queue_get.result()
+            line, reply, remote = item
+            if not line:
+                continue
+            if not line.startswith(COMMAND_PREFIXES):
+                if not remote:
+                    try:
+                        client.chat(line)
+                    except StardewError as exc:
+                        print(f"error: {exc}")
+                continue
+            if not await session.run(line, reply, remote=remote):
+                break
+    finally:
+        client.on_chat = printer
+        await session.stop_follow()
 
 
 async def main(args: argparse.Namespace) -> int:
@@ -319,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     ns = build_parser().parse_args()
-    level = logging.WARNING - 10 * min(ns.verbose, 2)
+    level = logging.NOTSET - 10 * min(ns.verbose, 2)
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         sys.exit(asyncio.run(main(ns)))
