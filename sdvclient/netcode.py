@@ -503,6 +503,75 @@ def parse_world_delta(data: bytes) -> RootDelta:
     return parse_root_delta(Reader(data), WORLD_DECODERS)
 
 
+# ---------------------------------------------------------------- FarmerTeam net fields (message 13)
+
+#: ``FarmerTeam.initNetFields()`` field count and the index of the shared-wallet
+#: ``money`` field (a ``NetIntDelta``), on the 1.6.15 server.  Both are
+#: UNVERIFIED: no ``teamDelta`` appears in the captures, and the ``FarmerTeam``
+#: full packet inside ``serverIntroduction`` cannot be reached (it trails the
+#: still-undecoded full-farmer binary).  Pin them from one live ``teamDelta``
+#: with ``client.py --trace`` (change money at a shop in-game);
+#: while ``None`` the client refuses to build a teamDelta so it never sprays a
+#: guessed field write at the host.
+FARMER_TEAM_FIELD_COUNT: Optional[int] = 77  # confirmed from a live 1.6.15 teamDelta
+F_TEAM_MONEY: Optional[int] = 0  # confirmed: a -100 shop spend serialised as int32 at index 0
+
+
+@dataclass
+class TeamDeltaProbe:
+    """A ``teamDelta`` decoded only far enough to learn its shape.
+
+    The ``FarmerTeam`` schema is not implemented, so field payloads are left
+    raw: ``dirty`` is the list of changed field indices, ``field_count`` the
+    length of the dirty-field bitarray, and ``tail`` the undecoded bytes that
+    follow it (the changed fields' payloads, in index order).
+    """
+
+    version: NetVersion
+    reassigned: bool
+    field_count: int
+    dirty: List[int]
+    tail: bytes
+
+
+def parse_team_delta(data: bytes) -> TeamDeltaProbe:
+    """Decode a ``teamDelta`` (message type 13) payload's version + dirty bits."""
+    r = Reader(data)
+    version = NetVersion.read(r)
+    delta_type = r.u8()
+    body = r.skippable()
+    if delta_type == 1:
+        return TeamDeltaProbe(version, True, 0, [], b"")
+    br = Reader(body)
+    bits = br.bitarray()
+    dirty = [i for i, b in enumerate(bits) if b]
+    return TeamDeltaProbe(version, False, len(bits), dirty, br.read(br.remaining()))
+
+
+def build_team_delta(version: NetVersion, field_count: int, money_index: int,
+                     money_delta: int) -> bytes:
+    """Build a ``teamDelta`` (message type 13) that adds ``money_delta`` gold to
+    the shared ``FarmerTeam`` wallet.
+
+    ``money`` is a ``NetIntDelta``, so the wire value is the signed amount to
+    *add* (the receiver does ``value += delta``), encoded as a single int32.
+    ``field_count`` must equal the host's ``FarmerTeam`` net-field count or the
+    server rejects the whole delta, exactly as for the farmer delta.
+    """
+    field = Writer()
+    field.i32(money_delta)
+
+    inner = Writer()
+    inner.bitarray([i == money_index for i in range(field_count)])
+    inner.raw(field.getvalue())
+
+    w = Writer()
+    version.write(w)
+    w.u8(0)  # RefDeltaType.ChildDelta
+    w.skippable(inner.getvalue())
+    return w.getvalue()
+
+
 def build_farmer_delta(
     farmer_id: int,
     version: NetVersion,

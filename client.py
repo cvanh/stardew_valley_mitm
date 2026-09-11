@@ -139,9 +139,45 @@ async def follow(client: StardewClient, name: str | None = None, *,
 
 COMMAND_PREFIXES = ("/", ".")
 
+# Friendly names for the /give cheat -> (itemId, display name). Any numeric item
+# id also works directly; these are just conveniences. Spawns are plain Objects,
+# so resources, ores, bars and gems work well; tools/weapons/big-craftables do not.
+ITEM_CATALOG = {
+    "wood": ("388", "Wood"), "stone": ("390", "Stone"), "fiber": ("771", "Fiber"),
+    "hay": ("178", "Hay"), "hardwood": ("709", "Hardwood"), "clay": ("330", "Clay"),
+    "coal": ("382", "Coal"), "sap": ("92", "Sap"),
+    "copper": ("378", "Copper Ore"), "iron": ("380", "Iron Ore"),
+    "goldore": ("384", "Gold Ore"), "iridiumore": ("386", "Iridium Ore"),
+    "copperbar": ("334", "Copper Bar"), "ironbar": ("335", "Iron Bar"),
+    "goldbar": ("336", "Gold Bar"), "iridiumbar": ("337", "Iridium Bar"),
+    "diamond": ("72", "Diamond"), "prismatic": ("74", "Prismatic Shard"),
+    "ruby": ("64", "Ruby"), "emerald": ("60", "Emerald"), "quartz": ("80", "Quartz"),
+}
+
+
+def resolve_item(token: str):
+    """Map a /give token (friendly name or numeric id) to (itemId, display name)."""
+    hit = ITEM_CATALOG.get(token.lower())
+    if hit:
+        return hit
+    if token.lstrip("-").isdigit():
+        return token, f"Item {token}"
+    raise ValueError(f"unknown item {token!r}; pass a numeric id or one of: "
+                     + ", ".join(sorted(ITEM_CATALOG)))
+
+
+def parse_item_spec(spec: str):
+    """CLI --give-item value: ``ITEM[,COUNT[,QUALITY]]`` -> (itemId, name, count, quality)."""
+    parts = [p.strip() for p in spec.split(",")]
+    item_id, name = resolve_item(parts[0])
+    count = int(parts[1]) if len(parts) > 1 and parts[1] else 1
+    quality = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+    return item_id, name, count, quality
+
+
 HELP = ("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | "
-        "/follow [NAME] | /unfollow | /players | /world | /things [R] | "
-        "/clear [R] | /quit  (prefix with . instead of / in game chat)")
+        "/give ITEM [COUNT] [QUALITY] | /follow [NAME] | /unfollow | /players | "
+        "/world | /things [R] | /clear [R] | /quit  (prefix with . in game chat)")
 
 
 class Session:
@@ -200,6 +236,13 @@ class Session:
             elif cmd == "face" and len(args) == 1:
                 client.face(int(args[0]))
                 reply(f"facing {args[0]}")
+            elif cmd == "give" and args:
+                item_id, name = resolve_item(args[0])
+                count = int(args[1]) if len(args) > 1 else 1
+                quality = int(args[2]) if len(args) > 2 else 0
+                client.add_item(item_id, name, count, quality)
+                reply(f"gave {count}x {name} (id {item_id}"
+                      + (f", quality {quality}" if quality else "") + ")")
             elif cmd == "players":
                 for p in client.players.values():
                     reply(f"  {'*' if p.is_me else ' '} {p}{' [host]' if p.is_host else ''}")
@@ -303,6 +346,7 @@ async def interactive(client: StardewClient) -> None:
 async def main(args: argparse.Namespace) -> int:
     host, port = parse_address(args.address)
     client = StardewClient(host, port)
+    client.trace = args.trace
     attach_printers(client)
 
     print(f"connecting to {host}:{port} ...")
@@ -361,6 +405,20 @@ async def main(args: argparse.Namespace) -> int:
         if args.say:
             client.chat(args.say)
             print(f"[chat] {me.name}: {args.say}")
+        if args.give_money is not None:
+            try:
+                client.give_money(args.give_money)
+                print(f"sent +{args.give_money}g to the shared wallet (no confirmation; "
+                      f"watch the game or --listen for the echoed teamDelta)")
+            except StardewError as exc:
+                print(f"give-money unavailable: {exc}")
+        if args.give_item is not None:
+            item_id, name, count, quality = args.give_item
+            try:
+                client.add_item(item_id, name, count, quality)
+                print(f"gave {count}x {name} (id {item_id}, quality {quality})")
+            except StardewError as exc:
+                print(f"give-item failed: {exc}")
         if args.goto:
             await client.walk_to(*args.goto)
             print(f"walked to tile {me.tile}")
@@ -400,6 +458,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--walk", type=parse_pair, metavar="DX,DY", help="walk relative tiles after joining")
     p.add_argument("--goto", type=parse_pair, metavar="X,Y", help="walk to an absolute tile after joining")
     p.add_argument("--warp", metavar="LOCATION,X,Y", help="warp to a location and tile, e.g. Town,30,60")
+    p.add_argument("--give-money", type=int, metavar="N",
+                   help="add N gold to the shared FarmerTeam wallet (may be negative)")
+    p.add_argument("--give-item", type=parse_item_spec, metavar="ITEM[,COUNT[,QUALITY]]",
+                   help="spawn an item into our inventory, e.g. --give-item diamond,5 or "
+                        "--give-item 74,1 (numeric id or a name; plain Objects only)")
+    p.add_argument("--trace", action="store_true",
+                   help="print every game message sent and received to stdout (decoded "
+                        "envelope + hex), like tools/pcap_dump.py but live; -vv adds raw "
+                        "Lidgren transport")
     p.add_argument("--follow", nargs="?", const="", metavar="NAME",
                    help="follow another player (default: the only other player) until ctrl-c: "
                         "warp to their location when it differs, else walk toward them")

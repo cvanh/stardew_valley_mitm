@@ -455,7 +455,32 @@ field-39 delta round-trips byte-for-byte.
 | chat | 10: `int64 0, int16 0, string text` |
 | move | 0 with fields 1 (position, moving), 2 (facing), 3 (speed); one delta per ~50 ms while walking |
 | change map | 5 `warpFarmer`; the server answers with a 3 for the new location. Also a 0 with field 7 so other clients learn the location |
+| give money | 13 `teamDelta` with the `FarmerTeam.money` field dirty (a `NetIntDelta`, so the int32 is the amount to **add**). Shared-wallet only; see below |
 | leave | 19, then Lidgren `Disconnect ""` |
+
+### 4.1 teamDelta / shared-wallet money (message 13)
+
+`FarmerTeam` syncs like any other `NetRoot`: `NetVersion` + delta-type byte +
+`skippable(bitarray + changed fields)`. On a shared-wallet host
+(`useSeparateWallets = false`) the communal gold is the `money` field, a
+`NetIntDelta` (int32 delta). `build_team_delta()` writes just that one field;
+`give_money(n)` / `--give-money N` sends it.
+
+On 1.6.15, verified live against the test host: `FarmerTeam` has **77** net
+fields (`netcode.FARMER_TEAM_FIELD_COUNT`, the bitarray length - must match the
+host or the delta is rejected, like the farmer delta) and `money` is field
+**index 0** (`netcode.F_TEAM_MONEY`). The pin: a `teamDelta` captured while
+buying grass starter (100g) at Pierre read `field_count=77 dirty=[0]
+tail=9cffffff` - `0x9cffffff` = int32 `-100`, matching the 100g spend exactly.
+The client also relearns the field count from any incoming `teamDelta`.
+
+To re-pin on another game version, run `client.py --trace` and change money
+at a **shop** (an immediate change, not the shipping bin, which only settles
+overnight): `money` is the dirty index whose `tail` is exactly 4 bytes and
+decodes to the gold delta. Some other team fields also change on join/shipping -
+e.g. index 41 carries a player-keyed collection (its delta ends in an int64
+farmer id), not money - so match on the 4-byte int32 payload, not just any
+dirty bit.
 
 Positions are pixels; a tile is 64 px. A farmer standing on tile `(tx, ty)` has
 `Position = (tx * 64, ty * 64 + 16)` (this is what `GameServer.warpFarmer`
@@ -466,9 +491,10 @@ sets) and the tile under a farmer is `((x + 32) / 64, (y + 16) / 64)`.
 * Location state (message 3/6) is decoded only for the object (16) and terrain
   (19) layers - the things scattered around the map - via `sdvclient/location.py`
   (see section 3.6). Resource clumps, furniture, buildings, the character
-  collection, team state (13) and the binary part of farmer state are still not
-  decoded; the client also keeps positions/names/locations of other farmers and
-  the world clock.
+  collection and the binary part of farmer state are still not decoded; the
+  client also keeps positions/names/locations of other farmers and the world
+  clock. Team state (13) is decoded only far enough to add shared-wallet money
+  (section 4.1); the rest of the `FarmerTeam` schema is undecoded.
 * The new-day / ready-check handshake (14, 30, 31) is not answered, so a bot
   that is still connected when the host goes to bed will hold up the night
   until it is kicked or disconnects.

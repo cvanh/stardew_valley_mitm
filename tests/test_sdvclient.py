@@ -276,6 +276,30 @@ class NetcodeTests(unittest.TestCase):
         self.assertEqual(parsed.location, "Town")
         self.assertEqual(parsed.root.values[netcode.F_CURRENT_LOCATION]["is_structure"], False)
 
+    def test_build_team_delta_money(self):
+        # Anchored to a live 1.6.15 teamDelta captured while buying grass starter
+        # (100g) at Pierre: field_count=77, dirty=[0] (money), tail=9cffffff (-100).
+        data = netcode.build_team_delta(netcode.NetVersion([71943, 0]),
+                                        netcode.FARMER_TEAM_FIELD_COUNT,
+                                        netcode.F_TEAM_MONEY, -100)
+        r = Reader(data)
+        self.assertEqual(netcode.NetVersion.read(r).vector, [71943, 0])
+        self.assertEqual(r.u8(), 0)  # RefDeltaType.ChildDelta
+        body = Reader(r.skippable())
+        bits = body.bitarray()
+        self.assertEqual(len(bits), 77)
+        self.assertEqual([i for i, b in enumerate(bits) if b], [0])
+        self.assertEqual(body.read(4).hex(), "9cffffff")  # int32 -100, as captured
+        self.assertTrue(body.eof())
+        # and it parses back, positive deltas (adding gold) too
+        probe = netcode.parse_team_delta(data)
+        self.assertEqual(probe.field_count, 77)
+        self.assertEqual(probe.dirty, [0])
+        self.assertEqual(struct.unpack("<i", probe.tail)[0], -100)
+        probe = netcode.parse_team_delta(
+            netcode.build_team_delta(netcode.NetVersion([1, 0]), 77, 0, 1000))
+        self.assertEqual(struct.unpack("<i", probe.tail)[0], 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

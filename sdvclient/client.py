@@ -24,7 +24,15 @@ from .inventory import (
     parse_inventory_xml,
 )
 from .lidgren import LidgrenConnection, Status
-from .netcode import FARMER_FIELD_COUNT, NetVersion, build_farmer_delta, parse_farmer_delta, parse_world_delta
+from .netcode import (
+    FARMER_FIELD_COUNT,
+    NetVersion,
+    build_farmer_delta,
+    build_team_delta,
+    parse_farmer_delta,
+    parse_team_delta,
+    parse_world_delta,
+)
 from .protocol import (
     ALL_PLAYERS,
     DEFAULT_PORT,
@@ -38,6 +46,7 @@ from .protocol import (
     build_player_introduction,
     build_warp_farmer,
     decode_game_messages,
+    message_type_name,
     encode_game_message,
     parse_available_farmhands,
     parse_chat_info_message,
@@ -201,6 +210,18 @@ class StardewClient:
         self._location_future: Optional[asyncio.Future] = None
         self._version = NetVersion([0, 0])
 
+        # Shared-wallet (FarmerTeam) state, learned from the first incoming
+        # teamDelta (message 13): the root version vector and net-field count.
+        # The money field index stays at the module default until pinned.
+        self._team_version: Optional[NetVersion] = None
+        self.team_field_count: Optional[int] = netcode.FARMER_TEAM_FIELD_COUNT
+        self.team_money_index: Optional[int] = netcode.F_TEAM_MONEY
+        self.on_team_delta: Optional[Callable[[netcode.TeamDeltaProbe], None]] = None
+
+        #: When set, every game message sent and received is printed to stdout
+        #: (decoded envelope + hex preview), like tools/pcap_dump.py but live.
+        self.trace = False
+
     # ------------------------------------------------------------------ connection
 
     @property
@@ -313,6 +334,38 @@ class StardewClient:
         """Send a chat message to everyone (default) or privately to one farmer id."""
         self._require_joined()
         self._send(MessageType.CHAT_MESSAGE, build_chat_message(text, to))
+
+    def give_money(self, amount: int) -> None:
+        """Add ``amount`` gold to the shared ``FarmerTeam`` wallet (may be negative).
+
+        This host uses a shared wallet, so there is one communal pot and no
+        per-player balance to target.  ``money`` is a ``NetIntDelta`` synced via
+        ``teamDelta`` (message 13); we send the signed delta.
+
+        Requires the ``FarmerTeam`` field count and money field index to be known
+        (pinned for 1.6.15 in :mod:`sdvclient.netcode`).  To re-pin on another
+        version, run the client with ``--trace`` and change money at a shop; the
+        money field is the dirty teamDelta index whose payload is a 4-byte int32
+        equal to the gold delta.  Until then this raises rather than guess.
+        """
+        self._require_joined()
+        if self.team_field_count is None or self.team_money_index is None:
+            raise StardewError(
+                "FarmerTeam money field is not pinned yet; run with --trace and "
+                "change money at a shop in-game to learn the field count and money "
+                "index, then set netcode.FARMER_TEAM_FIELD_COUNT and netcode.F_TEAM_MONEY"
+            )
+        version = self._next_team_version()
+        data = build_team_delta(version, self.team_field_count, self.team_money_index, int(amount))
+        self._send(MessageType.TEAM_DELTA, data)
+
+    def _next_team_version(self) -> NetVersion:
+        """The team root version to stamp on our next teamDelta, priority-bumped."""
+        base = list(self._team_version.vector) if self._team_version else [0, 0]
+        version = NetVersion(base)
+        version.bump(0)
+        self._team_version = version
+        return version
 
     def set_position(self, x: float, y: float, *, facing: Optional[int] = None, moving: bool = False,
                      speed: Optional[int] = None) -> None:
@@ -522,7 +575,20 @@ class StardewClient:
     def _send(self, msg_type: int, data: bytes = b"", farmer_id: Optional[int] = None) -> None:
         if farmer_id is None:
             farmer_id = self.me.unique_id if self.me is not None else 0
+        if self.trace:
+            self._trace("C->S", int(msg_type), farmer_id, data, compressed=False)
         self._conn.send_reliable(encode_game_message(int(msg_type), farmer_id, data))
+
+    @staticmethod
+    def _trace(direction: str, msg_type: int, farmer_id: int, data: bytes,
+               *, compressed: bool) -> None:
+        """Print one decoded game-message line to stdout (both directions)."""
+        preview = data[:32].hex()
+        if len(data) > 32:
+            preview += "..."
+        tag = " lz4" if compressed else ""
+        print(f"{direction} {msg_type:>3} {message_type_name(msg_type):<24} "
+              f"farmer={farmer_id} len={len(data)}{tag} {preview}")
 
     def _send_farmer_delta(self, **fields) -> None:
         assert self.me is not None
@@ -549,6 +615,8 @@ class StardewClient:
             log.exception("could not decode game message payload (%d bytes)", len(payload))
             return
         for msg in messages:
+            if self.trace:
+                self._trace("S->C", msg.type, msg.farmer_id, msg.data, compressed=msg.compressed)
             self._emit(self.on_message, msg)
             try:
                 self._dispatch(msg)
@@ -686,6 +754,19 @@ class StardewClient:
                     changed = True
             if changed:
                 self._emit(self.on_world_updated, self.world)
+
+        elif t == MessageType.TEAM_DELTA:
+            probe = parse_team_delta(msg.data)
+            if not probe.reassigned:
+                self._team_version = probe.version
+                if probe.field_count:
+                    if self.team_field_count is None:
+                        log.info("FarmerTeam has %d net fields", probe.field_count)
+                    self.team_field_count = probe.field_count
+            if self.trace and not probe.reassigned:
+                log.info("  teamDelta %s dirty=%s tail=%s", probe.version, probe.dirty,
+                         probe.tail.hex())
+            self._emit(self.on_team_delta, probe)
 
         elif t == MessageType.USER_NAME_UPDATE:
             farmer_id, user_name = parse_user_name_update(msg.data)

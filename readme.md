@@ -22,6 +22,18 @@ python3 client.py 10.1.110.27:24642 --say "hello from python" --walk 3,0 --liste
 
 # interactive: type to chat, /walk DX DY, /goto X Y, /warp Town 30 60, /players, /world, /quit
 python3 client.py 10.1.110.27:24642 --farmhand NAME --interactive
+
+# add gold to the shared wallet (shared-wallet hosts only; see docs/protocol.md 4.1)
+python3 client.py 10.1.110.27:24642 --farmhand NAME --give-money 1000
+
+# spawn items into our inventory (plain Objects: resources, ores, bars, gems).
+# ITEM is a numeric id or a friendly name; ,COUNT and ,QUALITY are optional
+python3 client.py 10.1.110.27:24642 --farmhand NAME --give-item diamond,5
+python3 client.py 10.1.110.27:24642 --farmhand NAME --give-item 74,1   # 74 = prismatic shard
+# or in interactive/chat: /give iridiumbar 20   (.give iridiumbar 20 in game chat)
+
+# trace: print every game message sent/received to stdout (live pcap_dump); -vv adds transport
+python3 client.py 10.1.110.27:24642 --farmhand NAME --trace --listen 30
 # other players can send the same commands in game chat as .walk, .goto, ... (the game eats /);
 # /quit is local only; replies are whispered back
 ```
