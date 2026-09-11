@@ -377,12 +377,24 @@ def parse_chat_info_message(data: bytes) -> Tuple[str, List[str]]:
 # ------------------------------------------------------------------ misc bodies
 
 
+#: Flag bit the server requires on a warpFarmer message; without it the warp is
+#: silently ignored.  Real 1.6.15 clients always set it (their trailing byte is
+#: 0x04 OR-ed with per-destination bits we do not need); bit 0 carries isStructure.
+WARP_FLAG = 0x04
+
+
 def build_warp_farmer(tile_x: int, tile_y: int, location_name: str, is_structure: bool = False) -> bytes:
+    """Build a ``warpFarmer`` (message type 5) body: ``short x, short y, string name, byte flags``.
+
+    The trailing byte is a flags field, not a plain ``isStructure`` bool: the
+    server only acts on the warp when :data:`WARP_FLAG` is set (verified live),
+    which is why sending 0/1 there left the farmer standing still.
+    """
     w = Writer()
     w.i16(tile_x)
     w.i16(tile_y)
     w.string(location_name)
-    w.u8(1 if is_structure else 0)
+    w.u8(WARP_FLAG | (0x01 if is_structure else 0x00))
     return w.getvalue()
 
 

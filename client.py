@@ -10,7 +10,8 @@ Examples::
 Interactive mode reads lines from stdin: plain text is sent as chat, and the
 commands ``/walk X Y`` (tiles, relative), ``/goto X Y`` (tiles, absolute),
 ``/warp LOCATION X Y``, ``/face 0-3``, ``/follow [NAME]``, ``/unfollow``,
-``/players``, ``/world``, ``/things [RADIUS]`` and ``/quit`` are understood.
+``/players``, ``/world``, ``/things [RADIUS]``, ``/clear [RADIUS]`` and ``/quit``
+are understood.  ``/clear`` removes every object and terrain feature around us.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def attach_printers(client: StardewClient) -> None:
     def on_world(world):
         if world.clock != last_clock["value"]:
             last_clock["value"] = world.clock
-            # print(f"[world] {world}")
+            print(f"[world] {world}")
 
     client.on_world_updated = on_world
 
@@ -156,7 +157,8 @@ async def interactive(client: StardewClient) -> None:
                 break
             elif cmd == "help":
                 print("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | "
-                      "/follow [NAME] | /unfollow | /players | /world | /things [R] | /quit")
+                      "/follow [NAME] | /unfollow | /players | /world | /things [R] | "
+                      "/clear [R] | /quit")
             elif cmd == "follow":
                 await stop_follow()
                 follow_task = asyncio.ensure_future(follow(client, args[0] if args else None))
@@ -190,6 +192,13 @@ async def interactive(client: StardewClient) -> None:
                     print(f"  {client.location}")
                     for thing in client.location.things_near(client.me.tile, radius):
                         print(f"    {thing}")
+            elif cmd == "clear":
+                if client.location is None or client.me is None or client.me.tile is None:
+                    print("  no map decoded yet")
+                else:
+                    radius = int(args[0]) if args else 3
+                    sent = await client.clear_area(client.me.tile, radius)
+                    print(f"  cleared {sent} thing(s) within {radius} tiles of {client.me.tile}")
             else:
                 print("unknown command; /help")
         except StardewError as exc:

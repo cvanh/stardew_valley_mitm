@@ -186,8 +186,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(protocol.parse_chat_info_message(w.getvalue()), ("PlayerJoined", ["a", "b"]))
 
     def test_warp(self):
+        # trailing byte carries the mandatory WARP_FLAG (0x04), not a plain isStructure bool
         r = Reader(protocol.build_warp_farmer(30, 60, "Town"))
-        self.assertEqual((r.i16(), r.i16(), r.string(), r.u8()), (30, 60, "Town", 0))
+        self.assertEqual((r.i16(), r.i16(), r.string(), r.u8()), (30, 60, "Town", protocol.WARP_FLAG))
+        r = Reader(protocol.build_warp_farmer(6, 6, "UndergroundMine1", is_structure=True))
+        self.assertEqual((r.i16(), r.i16(), r.string(), r.u8()),
+                         (6, 6, "UndergroundMine1", protocol.WARP_FLAG | 0x01))
 
     def test_tiles(self):
         self.assertEqual(protocol.tile_to_pixel(10, 9), (640.0, 592.0))

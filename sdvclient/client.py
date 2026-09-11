@@ -8,7 +8,14 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from . import netcode
-from .location import Location, apply_location_delta, parse_location_snapshot
+from .location import (
+    Location,
+    apply_location_delta,
+    build_location_removal_delta,
+    parse_location_snapshot,
+    read_location_delta_version,
+    read_location_intro_version,
+)
 from .lidgren import LidgrenConnection, Status
 from .netcode import FARMER_FIELD_COUNT, NetVersion, build_farmer_delta, parse_farmer_delta, parse_world_delta
 from .protocol import (
@@ -160,6 +167,10 @@ class StardewClient:
         self.players: Dict[int, Player] = {}
         self.world = WorldState()
         self.location: Optional[Location] = None
+        self._locations: Dict[str, Location] = {}
+        self._location_versions: Dict[str, NetVersion] = {}
+        self._location_version: Optional[NetVersion] = None
+        self._location_is_structure = False
         self.joined = False
         self.disconnect_reason: Optional[str] = None
 
@@ -374,10 +385,68 @@ class StardewClient:
             return None
         finally:
             self._location_future = None
+            # the server may not re-send an introduction for a location we were
+            # told about at join; switch to the cached decode so self.location
+            # tracks where we are and map edits target the right map.
+            cached = self._locations.get(location)
+            if cached is not None:
+                self.location = cached
+                self._location_version = self._location_versions.get(location)
+                self._location_is_structure = is_structure
 
     def send_raw(self, msg_type: int, data: bytes = b"", farmer_id: Optional[int] = None) -> None:
         """Send an arbitrary game message (escape hatch for messages this client does not model)."""
         self._send(msg_type, data, farmer_id=farmer_id)
+
+    # --------------------------------------------------------------- map editing
+
+    def _next_location_version(self) -> NetVersion:
+        """Location root version to stamp on our next removal: latest seen, our slot bumped."""
+        base = self._location_version.vector if self._location_version else [0, 0]
+        vec = list(base) or [0, 0]
+        if len(vec) < 2:
+            vec = vec + [0] * (2 - len(vec))
+        vec[-1] += 1  # bump the sender's (last) slot
+        return NetVersion(vec)
+
+    def remove_terrain(self, tile: Tuple[int, int]) -> None:
+        """Clear the terrain feature (tree, grass, tilled dirt, ...) at ``tile`` in our location."""
+        self._remove_tile(tile, objects=False)
+
+    def remove_object(self, tile: Tuple[int, int]) -> None:
+        """Clear the object (stone, twig, litter, ...) at ``tile`` in our location."""
+        self._remove_tile(tile, objects=True)
+
+    def _remove_tile(self, tile: Tuple[int, int], *, objects: bool) -> None:
+        self._require_joined()
+        if self.location is None:
+            raise StardewError("no location decoded yet; walk into the map first")
+        data = build_location_removal_delta(
+            self.location.name, self._location_is_structure,
+            self._next_location_version(), (int(tile[0]), int(tile[1])), objects=objects,
+        )
+        self._send(MessageType.LOCATION_DELTA, data)
+        # reflect it locally too
+        (self.location.objects if objects else self.location.terrain).pop((int(tile[0]), int(tile[1])), None)
+
+    async def clear_area(self, center: Tuple[int, int], radius: int = 3, *, delay: float = 0.15) -> int:
+        """Remove every object and terrain feature within ``radius`` tiles of ``center``.
+
+        Sends one removal per thing (objects then terrain), pacing them by
+        ``delay`` seconds so the host is not flooded.  Returns the count sent.
+        """
+        self._require_joined()
+        if self.location is None:
+            raise StardewError("no location decoded yet")
+        targets = [t.tile for t in self.location.things_near(center, radius)]
+        sent = 0
+        for tile in targets:
+            in_objects = tile in self.location.objects
+            self._remove_tile(tile, objects=in_objects)
+            sent += 1
+            if delay:
+                await asyncio.sleep(delay)
+        return sent
 
     # ------------------------------------------------------------------ internals: sending
 
@@ -495,12 +564,19 @@ class StardewClient:
         elif t == MessageType.LOCATION_INTRODUCTION:
             intro = parse_location_introduction(msg.data)
             log.debug("location introduction: %s (force_current=%s)", intro.display_name, intro.force_current)
+            # the server front-loads an introduction for every location at join; cache them all
+            decoded = parse_location_snapshot(msg.data)
+            key = decoded.name or intro.display_name
+            self._locations[key] = decoded
+            ver = read_location_intro_version(msg.data)
+            if ver is not None:
+                self._location_versions[key] = ver
             entering = intro.force_current or self._location_future is not None
             if self.me is not None and entering:
                 self.me.location = intro.display_name
             if entering:
-                # decode the map we are entering: objects and terrain by tile
-                self.location = parse_location_snapshot(msg.data)
+                self.location = decoded
+                self._location_version = self._location_versions.get(key)
                 log.debug("decoded location: %s", self.location)
                 self._emit(self.on_location_changed, self.location)
             if self._location_future is not None and not self._location_future.done():
@@ -508,6 +584,12 @@ class StardewClient:
             self._emit(self.on_location, intro)
 
         elif t == MessageType.LOCATION_DELTA:
+            head = read_location_delta_version(msg.data)
+            if head is not None:
+                self._location_versions[head[1]] = head[2]
+                if self.location is not None and head[1] == self.location.name:
+                    self._location_is_structure = head[0]
+                    self._location_version = head[2]
             if self.location is not None and apply_location_delta(self.location, msg.data):
                 self._emit(self.on_location_changed, self.location)
 

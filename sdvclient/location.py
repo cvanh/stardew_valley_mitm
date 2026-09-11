@@ -35,9 +35,14 @@ import struct
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from .binary import Reader
+from .binary import Reader, Writer
 from .netcode import NetVersion
 from .protocol import parse_location_introduction
+
+#: GameLocation net-field indices (1.6.15) for the two tile dictionaries.
+FIELD_OBJECTS = 16
+FIELD_TERRAIN = 19
+GAMELOCATION_FIELD_COUNT = 51
 
 Tile = Tuple[int, int]
 
@@ -279,6 +284,67 @@ def _apply_vector2dict_delta(r: Reader, loc: Location, objects: bool) -> bool:
         NetVersion.read(r)
         r.skippable()
     return False
+
+
+def build_location_removal_delta(
+    name: str,
+    is_structure: bool,
+    root_version: NetVersion,
+    tile: Tile,
+    *,
+    objects: bool,
+) -> bytes:
+    """Build a ``locationDelta`` (message type 6) body that removes one tile entry.
+
+    Removes the entry at ``tile`` from ``netObjects`` (``objects=True``) or
+    ``terrainFeatures`` (``objects=False``).  This is byte-for-byte the delta a
+    real 1.6.15 client emits when a tool clears that tile (verified against
+    captured traffic): a single ``NetVector2Dictionary`` removal, empty entry
+    version, no updates.  ``root_version`` is the location root's version clock
+    as last seen from the server, with the sender's own slot bumped.
+    """
+    field_index = FIELD_OBJECTS if objects else FIELD_TERRAIN
+    fb = Writer()
+    fb.varint(1)  # one change
+    fb.u8(1)      # removal
+    fb.f32(float(tile[0]))
+    fb.f32(float(tile[1]))
+    NetVersion([]).write(fb)  # entry version (empty, as real removals send)
+    fb.varint(0)  # no updates
+    body = Writer()
+    bits = [i == field_index for i in range(GAMELOCATION_FIELD_COUNT)]
+    body.bitarray(bits)
+    body.raw(fb.getvalue())
+    w = Writer()
+    w.bool_(is_structure)
+    w.string(name)
+    root_version.write(w)
+    w.u8(0)  # RefDeltaType.ChildDelta
+    w.skippable(body.getvalue())
+    return w.getvalue()
+
+
+def read_location_intro_version(data: bytes) -> Optional[NetVersion]:
+    """Read the location root version from a ``locationIntroduction`` (message type 3) header."""
+    r = Reader(data)
+    try:
+        r.bool_()  # force_current
+        r.u8()     # peer id
+        return NetVersion.read(r)
+    except (EOFError, ValueError):
+        return None
+
+
+def read_location_delta_version(data: bytes) -> Optional[Tuple[bool, str, NetVersion]]:
+    """Read the wrapper of a ``locationDelta`` body: (is_structure, name, root_version)."""
+    r = Reader(data)
+    try:
+        is_structure = r.bool_()
+        name = r.string()
+        version = NetVersion.read(r)
+    except (EOFError, ValueError, UnicodeDecodeError):
+        return None
+    return is_structure, name, version
 
 
 def _find_type_name(data: bytes, pos: int, scan: int = 32) -> int:
