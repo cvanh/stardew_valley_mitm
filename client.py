@@ -42,6 +42,13 @@ def parse_pair(value: str):
     return int(parts[0]), int(parts[1])
 
 
+def no_map_hint(client: StardewClient) -> str:
+    """Message for when the current location has no decoded map (e.g. a cabin at spawn)."""
+    here = (client.me.location if client.me else None) or "here"
+    maps = ", ".join(client._locations) or "none yet"
+    return f"  no map for {here} - warp onto a decoded map first (have: {maps}), e.g. /warp Farm 64 15"
+
+
 def attach_printers(client: StardewClient) -> None:
     def who(sender, farmer_id):
         return sender.name if sender is not None and sender.name else str(farmer_id)
@@ -199,16 +206,20 @@ class Session:
             elif cmd == "world":
                 reply(f"  {client.world}  ping={client.ping and round(client.ping * 1000)}ms")
             elif cmd == "things":
-                if client.location is None or client.me is None or client.me.tile is None:
-                    reply("  no map decoded yet")
+                if client.me is None or client.me.tile is None:
+                    reply("  not in the world yet")
+                elif client.location is None:
+                    reply(no_map_hint(client))
                 else:
                     radius = int(args[0]) if args else 5
                     reply(f"  {client.location}")
                     for thing in client.location.things_near(client.me.tile, radius):
                         reply(f"    {thing}")
             elif cmd == "clear":
-                if client.location is None or client.me is None or client.me.tile is None:
-                    reply("  no map decoded yet")
+                if client.me is None or client.me.tile is None:
+                    reply("  not in the world yet")
+                elif client.location is None:
+                    reply(no_map_hint(client))
                 else:
                     radius = int(args[0]) if args else 3
                     sent = await client.clear_area(client.me.tile, radius)

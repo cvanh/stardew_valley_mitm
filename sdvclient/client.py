@@ -636,7 +636,11 @@ class StardewClient:
             ver = read_location_intro_version(msg.data)
             if ver is not None:
                 self._location_versions[key] = ver
-            entering = intro.force_current or self._location_future is not None
+            # the server marks the active location force_current only sometimes; at
+            # join it front-loads every farm map as force=False, so also treat an
+            # introduction whose name matches where we already are as "entering".
+            here = self.me is not None and self.me.location in (key, intro.display_name)
+            entering = intro.force_current or self._location_future is not None or here
             if self.me is not None and entering:
                 self.me.location = intro.display_name
             if entering:
