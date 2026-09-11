@@ -3,14 +3,14 @@
 
 Examples::
 
-    python3 client.py 10.1.120.13:24642 --list
-    python3 client.py 10.1.120.13:24642 --say "hello from python" --walk 3,0 --listen 30
-    python3 client.py 10.1.120.13:24642 --farmhand dsf --interactive
+    python3 client.py 10.1.110.27:24642 --list
+    python3 client.py 10.1.110.27:24642 --say "hello from python" --walk 3,0 --listen 30
+    python3 client.py 10.1.110.27:24642 --farmhand dsf --interactive
 
 Interactive mode reads lines from stdin: plain text is sent as chat, and the
 commands ``/walk X Y`` (tiles, relative), ``/goto X Y`` (tiles, absolute),
-``/warp LOCATION X Y``, ``/face 0-3``, ``/players``, ``/world`` and ``/quit``
-are understood.
+``/warp LOCATION X Y``, ``/face 0-3``, ``/follow [NAME]``, ``/unfollow``,
+``/players``, ``/world`` and ``/quit`` are understood.
 """
 
 from __future__ import annotations
@@ -53,14 +53,93 @@ def attach_printers(client: StardewClient) -> None:
     def on_world(world):
         if world.clock != last_clock["value"]:
             last_clock["value"] = world.clock
-            print(f"[world] {world}")
+            # print(f"[world] {world}")
 
     client.on_world_updated = on_world
+
+
+def resolve_target(client: StardewClient, name: str | None):
+    """Pick the player to follow: the one matching ``name``, else the only other player."""
+    others = [p for p in client.players.values() if not p.is_me]
+    if name:
+        for p in others:
+            if p.name.lower() == name.lower() or str(p.unique_id) == name:
+                return p
+        return None
+    if not others:
+        return None
+    if len(others) > 1:
+        print(f"[follow] {len(others)} other players; following {others[0].name} - pass a name to pick another")
+    return others[0]
+
+
+async def follow(client: StardewClient, name: str | None = None, *,
+                 stop_distance: int = 1, poll: float = 0.3) -> None:
+    """Walk after another player until they leave, we disconnect, or we are cancelled.
+
+    Takes one axis-aligned tile step per iteration toward the target's current
+    tile, re-reading its position (kept live by the server's farmer deltas)
+    each time, and idles while within ``stop_distance`` tiles or in another
+    location.
+    """
+    target = resolve_target(client, name)
+    if target is None:
+        print("[follow] no player to follow" + (f" named {name!r}" if name else ""))
+        return
+    print(f"[follow] following {target.name} (ctrl-c or /unfollow to stop)")
+    here = target.location
+    try:
+        while client.joined:
+            target = resolve_target(client, name or target.name)
+            if target is None or target.unique_id not in client.players:
+                print("[follow] target is gone")
+                return
+            me = client.me
+            if me is None or target.tile is None:
+                await asyncio.sleep(poll)
+                continue
+            # in another location: warp to them instead of walking there.
+            # use a tiny timeout - this server sends no warp confirmation, so
+            # waiting the default 15s would freeze the follow loop.
+            if target.location and target.location != me.location:
+                if target.location != here:
+                    print(f"[follow] {target.name} moved to {target.location}, warping")
+                    here = target.location
+                await client.warp(target.location, *target.tile, timeout=0.1)
+                await asyncio.sleep(poll)
+                continue
+            if me.tile is None:
+                await asyncio.sleep(poll)
+                continue
+            (mx, my), (tx, ty) = me.tile, target.tile
+            if abs(tx - mx) + abs(ty - my) <= stop_distance:
+                await asyncio.sleep(poll)
+                continue
+            # one tile toward the target along the axis we are furthest off on
+            if abs(tx - mx) >= abs(ty - my):
+                await client.walk((tx > mx) - (tx < mx), 0)
+            else:
+                await client.walk(0, (ty > my) - (ty < my))
+    except asyncio.CancelledError:
+        print("[follow] stopped")
+        raise
 
 
 async def interactive(client: StardewClient) -> None:
     loop = asyncio.get_running_loop()
     print("interactive mode - type text to chat, /help for commands")
+    follow_task: asyncio.Task | None = None
+
+    async def stop_follow() -> None:
+        nonlocal follow_task
+        if follow_task is not None and not follow_task.done():
+            follow_task.cancel()
+            try:
+                await follow_task
+            except asyncio.CancelledError:
+                pass
+        follow_task = None
+
     while client.joined:
         line = await loop.run_in_executor(None, sys.stdin.readline)
         if not line:
@@ -76,14 +155,23 @@ async def interactive(client: StardewClient) -> None:
             if cmd in ("quit", "exit"):
                 break
             elif cmd == "help":
-                print("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | /players | /world | /quit")
+                print("/walk DX DY | /goto X Y | /warp LOCATION X Y | /face DIR | "
+                      "/follow [NAME] | /unfollow | /players | /world | /quit")
+            elif cmd == "follow":
+                await stop_follow()
+                follow_task = asyncio.ensure_future(follow(client, args[0] if args else None))
+            elif cmd == "unfollow":
+                await stop_follow()
             elif cmd == "walk" and len(args) == 2:
+                await stop_follow()
                 await client.walk(int(args[0]), int(args[1]))
                 print(f"now at tile {client.me.tile}")
             elif cmd == "goto" and len(args) == 2:
+                await stop_follow()
                 await client.walk_to(int(args[0]), int(args[1]))
                 print(f"now at tile {client.me.tile}")
             elif cmd == "warp" and len(args) == 3:
+                await stop_follow()
                 intro = await client.warp(args[0], int(args[1]), int(args[2]))
                 print(f"warped to {intro.display_name if intro else args[0]} (no confirmation)" if not intro
                       else f"warped to {intro.display_name}")
@@ -98,6 +186,7 @@ async def interactive(client: StardewClient) -> None:
                 print("unknown command; /help")
         except StardewError as exc:
             print(f"error: {exc}")
+    await stop_follow()
 
 
 async def main(args: argparse.Namespace) -> int:
@@ -110,6 +199,7 @@ async def main(args: argparse.Namespace) -> int:
         await client.connect(timeout=args.timeout)
     except Exception as exc:  # noqa: BLE001 - report and exit
         print(f"connection failed: {exc}")
+        await client.disconnect()
         return 1
     print(f"server: {client.server_name} (protocol {client.server_version}), {client.world}")
     print("available farmhands:")
@@ -126,6 +216,19 @@ async def main(args: argparse.Namespace) -> int:
     if args.list:
         await client.disconnect()
         return 0
+
+    if not client.farmhands:
+        print("=" * 70)
+        print("!! CANNOT JOIN: the server offered no available farmhands.")
+        print("   The most likely cause is that the farmhand is already in use -")
+        print("   e.g. another bot from an earlier run is still connected and")
+        print("   holding it, or you are logged into that farmhand yourself, or")
+        print("   the host is sitting in a menu / the farm is full.")
+        print("   Fixes: stop any running bot ('pkill -f client.py'), wait a few")
+        print("   seconds for the server to drop it, or restart the host.")
+        print("=" * 70)
+        await client.disconnect()
+        return 2
 
     try:
         selector = args.farmhand
@@ -160,6 +263,10 @@ async def main(args: argparse.Namespace) -> int:
                   else f"warped to {intro.display_name}")
         if args.interactive:
             await interactive(client)
+        elif args.follow is not None:
+            name = args.follow or None
+            print("following (ctrl-c to stop) ...")
+            await follow(client, name)
         elif args.listen:
             print(f"listening for {args.listen}s (ctrl-c to stop) ...")
             try:
@@ -182,6 +289,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--walk", type=parse_pair, metavar="DX,DY", help="walk relative tiles after joining")
     p.add_argument("--goto", type=parse_pair, metavar="X,Y", help="walk to an absolute tile after joining")
     p.add_argument("--warp", metavar="LOCATION,X,Y", help="warp to a location and tile, e.g. Town,30,60")
+    p.add_argument("--follow", nargs="?", const="", metavar="NAME",
+                   help="follow another player (default: the only other player) until ctrl-c: "
+                        "warp to their location when it differs, else walk toward them")
     p.add_argument("--listen", type=float, default=0, metavar="SECONDS", help="stay connected and print events")
     p.add_argument("--interactive", "-i", action="store_true", help="read chat/commands from stdin")
     p.add_argument("--timeout", type=float, default=15.0, help="connect timeout in seconds")
